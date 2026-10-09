@@ -49,7 +49,8 @@ final class TextNametagSupport {
     }
 
     private boolean applyForcedOrCachedText(@NotNull final UUID viewerId, @NotNull final Component text) {
-        if (text.equals(relationalCache.get(viewerId))) {
+        final Component previous = relationalCache.get(viewerId);
+        if (text.equals(previous)) {
             return false;
         }
 
@@ -63,7 +64,11 @@ final class TextNametagSupport {
         }
 
         relationalCache.put(viewerId, text);
-        host.markViewerNeedsFullRefresh(viewerId);
+        if (previous == null) {
+            // First text since this viewer was (re)attached: resync the whole entity once. Later text changes
+            // only need the text entry, which the normal delta flush sends.
+            host.markViewerNeedsFullRefresh(viewerId);
+        }
         host.touchLastUpdate();
         return true;
     }
