@@ -1,5 +1,25 @@
 # Changelog
 
+## Valblock fork
+
+- New display group option `overlay: {alignment: LEFT|RIGHT|CENTER, textOpacity: 4-255}`: the text row is drawn at the height of the previous row without taking room in the compact stack, aligned on the edge of its widest line, with a fixed text opacity that sneaking and through-wall dimming leave alone. Used to frame the whole nametag with a resource-pack glyph.
+- New per-viewer preference `seeoverlays` (`/unt preferences seeoverlays <true|false> [player]`, placeholder `%unt_see_overlays%`, stored like the other preferences): a viewer can stop seeing the overlay rows of other players.
+- The plugin refuses to enable with PacketEvents older than 2.10 and logs which jar the PacketEvents classes come from.
+- CI: Gradle runs on JDK 21 and compiles with the JDK 25 toolchain (Gradle 8.14 cannot parse 4-part JDK 25 versions).
+- Nametag lifecycle locking is per player instead of one manager-wide monitor; helmet height and packet flushes of a refresh run outside the lock.
+- `refresh` called from the server thread is handed to an async task; the periodic sweep skips an owner whose previous refresh is still running.
+- Tracking a player no longer refreshes the owner synchronously: rows are only (re)spawned once the owner spawn reached the viewer, rows the viewer already has are skipped, and one coalesced async refresh follows.
+- A changed nametag text sends only the changed metadata entry; the full metadata resync is kept for the first text after a viewer (re)attaches.
+- `setBillboard` only writes when the value changes (no more useless metadata packet + refresh event per viewer and refresh).
+- New `performance.helmetHeightCompensation` (default `false`): hat-height compensation and its hooks are skipped entirely when off.
+- ItemsAdder hat hook: pack loaded lazily and asynchronously, only model JSON kept in memory; JSON model lookups and custom-model-data misses are memoized.
+- Teleport / zero-damage / cancelled-death recovery: 2 attempts (5 and 40 ticks) instead of 4, Bukkit tracking reads on the player's thread, rows the viewer already has are not respawned; zero-damage handler ignores cancelled events.
+- Packet listener only tracks spawns of players and nametag rows; destroying an entity no longer rewrites every passenger list.
+- Retired row entity ids are forgotten after 60 s instead of being kept until shutdown.
+- PlaceholderAPI: second pass only when the first result still contains `%`; the final whole-line pass is skipped when no `%` is left.
+- One per-tick timer for the placeholder phase counters instead of three; the per-tick animation/glow task does nothing until a row has an animation or glow.
+- Passenger resync every 30 s instead of 5 s.
+
 ## Unreleased
 
 ### Breaking changes

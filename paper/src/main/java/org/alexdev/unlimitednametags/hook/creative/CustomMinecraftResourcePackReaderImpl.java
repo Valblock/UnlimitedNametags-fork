@@ -60,7 +60,13 @@ import java.util.Queue;
 import static java.util.Objects.requireNonNull;
 
 public final class CustomMinecraftResourcePackReaderImpl implements MinecraftResourcePackReader {
-    public static final CustomMinecraftResourcePackReaderImpl INSTANCE = new CustomMinecraftResourcePackReaderImpl(false);
+    public static final CustomMinecraftResourcePackReaderImpl INSTANCE = new CustomMinecraftResourcePackReaderImpl(false, false);
+    /**
+     * Reads only {@code assets/<namespace>/models/**} of the root pack. Hat-height lookups only use models, so
+     * textures, sounds, fonts, overlays and other files are skipped instead of being kept in heap.
+     */
+    public static final CustomMinecraftResourcePackReaderImpl MODELS_ONLY = new CustomMinecraftResourcePackReaderImpl(false, true);
+    private static final String MODELS_FOLDER = "models";
 
     private static final String METADATA_EXTENSION = ".mcmeta";
     private static final String PACK_METADATA_FILE = "pack.mcmeta";
@@ -71,11 +77,23 @@ public final class CustomMinecraftResourcePackReaderImpl implements MinecraftRes
     public static final String OVERLAYS_FOLDER = "overlays";
 
     private final boolean lenient;
+    private final boolean modelsOnly;
 
     private CustomMinecraftResourcePackReaderImpl(
-            final boolean lenient
+            final boolean lenient,
+            final boolean modelsOnly
     ) {
         this.lenient = lenient;
+        this.modelsOnly = modelsOnly;
+    }
+
+    /** {@code path} is {@code assets/<namespace>/models/<...>} (no overlay). */
+    private static boolean isRootModelPath(final String path) {
+        if (!path.startsWith(ASSETS_FOLDER + '/')) {
+            return false;
+        }
+        final int namespaceEnd = path.indexOf('/', ASSETS_FOLDER.length() + 1);
+        return namespaceEnd > 0 && path.startsWith(MODELS_FOLDER + '/', namespaceEnd + 1);
     }
 
     @Override
@@ -91,6 +109,10 @@ public final class CustomMinecraftResourcePackReaderImpl implements MinecraftRes
 
         while (reader.hasNext()) {
             String path = reader.next();
+
+            if (modelsOnly && !isRootModelPath(path)) {
+                continue;
+            }
 
             // tokenize path in sections, e.g.: [ assets, minecraft, textures, ... ]
             Queue<String> tokens = tokenize(path);

@@ -32,6 +32,7 @@ import java.util.OptionalDouble;
 public class NexoHook extends Hook implements Listener, CreativeHook, HatHookPaper {
 
     private final Map<Key, Map<Integer, Model>> cmdCache;
+    private final Map<Key, java.util.Set<Integer>> cmdMissCache = Maps.newConcurrentMap();
     private ResourcePack resourcePack;
     private JsonModelHeightResolver jsonModelHeightResolver;
 
@@ -139,6 +140,7 @@ public class NexoHook extends Hook implements Listener, CreativeHook, HatHookPap
     @EventHandler
     public void onLoad(NexoItemsLoadedEvent event) {
         cmdCache.clear();
+        cmdMissCache.clear();
         loadTexture();
         plugin.getLogger().info("Nexo items loaded, clearing cache");
     }
@@ -151,5 +153,6 @@ public class NexoHook extends Hook implements Listener, CreativeHook, HatHookPap
     @Override
     public void onDisable() {
         cmdCache.clear();
+        cmdMissCache.clear();
     }
 }

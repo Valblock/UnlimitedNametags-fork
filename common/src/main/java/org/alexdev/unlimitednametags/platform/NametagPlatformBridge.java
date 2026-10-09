@@ -36,6 +36,13 @@ public interface NametagPlatformBridge {
 
     boolean isEligibleToShow(@NotNull UUID ownerId, @NotNull UUID viewerId, boolean visible, boolean viewerAlreadySeeing);
 
+    /**
+     * Whether this viewer chose not to see overlay rows ({@code overlay} display groups) of other players.
+     */
+    default boolean viewerHidesOverlays(@NotNull UUID viewerId) {
+        return false;
+    }
+
     @Nullable
     String nametagShowBlockReason(@NotNull UUID ownerId, @NotNull UUID viewerId, boolean visible, boolean viewerAlreadySeeing);
 

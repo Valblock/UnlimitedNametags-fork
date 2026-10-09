@@ -94,6 +94,8 @@ public final class UntBrigadierCommands {
         msg(plugin, to, headerMiniMessage, Placeholder.unparsed("name", subject.getName()));
         msg(plugin, to, "  <yellow>seeothers</yellow><gray>:</gray> <white><v></white>",
                 Placeholder.unparsed("v", String.valueOf(seeOthers)));
+        msg(plugin, to, "  <yellow>seeoverlays</yellow><gray>:</gray> <white><v></white>",
+                Placeholder.unparsed("v", String.valueOf(nm.isSeeingOverlays(subject))));
         msg(plugin, to, "  <yellow>showown</yellow><gray>:</gray> <white><v></white>",
                 Placeholder.unparsed("v", String.valueOf(showOwnSelf)));
         msg(plugin, to, "  <yellow>showothers</yellow><gray>:</gray> <white><v></white>",
@@ -412,6 +414,34 @@ public final class UntBrigadierCommands {
                                             }
                                             return applySeeOthers(plugin, ctx.getSource().getSender(), target, v);
                                         }))))
+                .then(Commands.literal("seeoverlays")
+                        .then(Commands.argument("value", BoolArgumentType.bool())
+                                .executes(ctx -> {
+                                    final boolean v = BoolArgumentType.getBool(ctx, "value");
+                                    if (!(ctx.getSource().getSender() instanceof Player p)) {
+                                        msg(plugin, ctx.getSource().getSender(),
+                                                "<red>Players only (or specify a target with permission).</red>");
+                                        return 0;
+                                    }
+                                    return applySeeOverlays(plugin, p, p, v);
+                                })
+                                .then(Commands.argument("target", StringArgumentType.word())
+                                        .requires(stack -> stack.getSender().hasPermission("unt.preferences.others"))
+                                        .suggests((ctx, builder) -> {
+                                            Bukkit.getOnlinePlayers().forEach(p -> builder.suggest(p.getName()));
+                                            return builder.buildFuture();
+                                        })
+                                        .executes(ctx -> {
+                                            final boolean v = BoolArgumentType.getBool(ctx, "value");
+                                            final Player target = Bukkit.getPlayerExact(
+                                                    StringArgumentType.getString(ctx, "target"));
+                                            if (target == null) {
+                                                msg(plugin, ctx.getSource().getSender(),
+                                                        "<red>Player not found or not online.</red>");
+                                                return 0;
+                                            }
+                                            return applySeeOverlays(plugin, ctx.getSource().getSender(), target, v);
+                                        }))))
                 .then(Commands.literal("showown")
                         .then(Commands.argument("value", BoolArgumentType.bool())
                                 .executes(ctx -> {
@@ -490,6 +520,16 @@ public final class UntBrigadierCommands {
                 "<green>Set seeing others' nametags for <yellow><name></yellow> to <yellow><state></yellow></green>",
                 Placeholder.unparsed("name", target.getName()),
                 Placeholder.unparsed("state", String.valueOf(seeOthers)));
+        return Command.SINGLE_SUCCESS;
+    }
+
+    private static int applySeeOverlays(@NotNull UnlimitedNameTags plugin, @NotNull CommandSender feedback,
+            @NotNull Player target, boolean seeOverlays) {
+        plugin.getNametagManager().setSeeingOverlays(target, seeOverlays);
+        msg(plugin, feedback,
+                "<green>Set seeing others' overlay rows for <yellow><name></yellow> to <yellow><state></yellow></green>",
+                Placeholder.unparsed("name", target.getName()),
+                Placeholder.unparsed("state", String.valueOf(seeOverlays)));
         return Command.SINGLE_SUCCESS;
     }
 

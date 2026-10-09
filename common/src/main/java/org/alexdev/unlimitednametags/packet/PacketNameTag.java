@@ -97,6 +97,22 @@ public abstract class PacketNameTag implements AnimationPoseTarget, NametagPasse
     /** When true, metadata modifications accumulate without network flush until batch end. */
     private volatile boolean deferMetadataFlush;
 
+    /**
+     * Sticky flag: becomes true once any row was given a display group with an animation or glow, or a glow
+     * override. While false, the per-tick animation/glow task has nothing to do and can skip iterating rows.
+     */
+    private static volatile boolean animationOrGlowSeen;
+
+    public static boolean isAnimationOrGlowSeen() {
+        return animationOrGlowSeen;
+    }
+
+    private static void noteAnimationOrGlow(@NotNull Settings.DisplayGroup group) {
+        if (!animationOrGlowSeen && (group.animation() != null || group.glow() != null)) {
+            animationOrGlowSeen = true;
+        }
+    }
+
     protected PacketNameTag(@NotNull NametagRuntime runtime, @NotNull NametagPlatformBridge platform,
             @NotNull NametagMaterialBridge materials, @NotNull UUID ownerId,
             @NotNull Settings.DisplayGroup displayGroup) {
@@ -107,6 +123,7 @@ public abstract class PacketNameTag implements AnimationPoseTarget, NametagPasse
         this.entityId = runtime.nextEntityId();
         this.entityIdUuid = UUID.randomUUID();
         this.displayGroup = displayGroup;
+        noteAnimationOrGlow(displayGroup);
         this.createdDisplayType = displayGroup.resolvedDisplayType();
         this.perPlayerEntity = new WrapperPerPlayerEntity(buildBaseSupplier());
         this.blocked = Sets.newConcurrentHashSet();
@@ -119,6 +136,7 @@ public abstract class PacketNameTag implements AnimationPoseTarget, NametagPasse
 
     public void setDisplayGroup(@NotNull Settings.DisplayGroup displayGroup) {
         this.displayGroup = displayGroup;
+        noteAnimationOrGlow(displayGroup);
         resetDisplayAnimationState();
         resetGlowAnimationState();
         applyGlowNow(0L);
@@ -126,6 +144,9 @@ public abstract class PacketNameTag implements AnimationPoseTarget, NametagPasse
 
     public void setGlowOverride(@Nullable GlowOverride glowOverride) {
         this.glowOverride = glowOverride;
+        if (glowOverride != null) {
+            animationOrGlowSeen = true;
+        }
         resetGlowAnimationState();
         applyGlowNow(0L);
     }
@@ -289,7 +310,13 @@ public abstract class PacketNameTag implements AnimationPoseTarget, NametagPasse
     }
 
     public void setBillboard(@NotNull AbstractDisplayMeta.BillboardConstraints billboard) {
-        modifyAbstractAll(meta -> meta.setBillboardConstraints(billboard));
+        // EntityLib marks the index dirty on every set, even for an identical value: only write real changes,
+        // otherwise every periodic refresh sends one useless metadata packet (and refresh event) per viewer.
+        modifyAbstractAll(meta -> {
+            if (meta.getBillboardConstraints() != billboard) {
+                meta.setBillboardConstraints(billboard);
+            }
+        });
     }
 
     public void setShadowed(final boolean shadowed) {
@@ -787,13 +814,26 @@ public abstract class PacketNameTag implements AnimationPoseTarget, NametagPasse
         if (removed || blocked.contains(viewerId)) {
             return false;
         }
+        if (hiddenAsOverlay(viewerId)) {
+            return false;
+        }
         return platform.isEligibleToShow(ownerId, viewerId, visible, getViewers().contains(viewerId));
+    }
+
+    /**
+     * An overlay row of another player, for a viewer who chose not to see overlays.
+     */
+    private boolean hiddenAsOverlay(@NotNull UUID viewerId) {
+        return displayGroup.isOverlay() && !viewerId.equals(ownerId) && platform.viewerHidesOverlays(viewerId);
     }
 
     @NotNull
     private String showBlockReason(@NotNull UUID viewerId) {
         if (blocked.contains(viewerId)) {
             return "viewer is blocked for this nametag";
+        }
+        if (hiddenAsOverlay(viewerId)) {
+            return "viewer hides other players' overlay rows";
         }
         final String reason = platform.nametagShowBlockReason(ownerId, viewerId, visible, getViewers().contains(viewerId));
         return reason != null ? reason : "unknown eligibility failure";

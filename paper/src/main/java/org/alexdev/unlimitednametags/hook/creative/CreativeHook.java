@@ -19,6 +19,7 @@ import team.unnamed.creative.model.Model;
 
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.logging.Logger;
 
 public interface CreativeHook {
@@ -34,6 +35,10 @@ public interface CreativeHook {
 
     @NotNull
     Map<Key, Map<Integer, Model>> getCmdCache();
+
+    /** Custom model data values (per item type) already known to have no model in the pack. */
+    @NotNull
+    Map<Key, Set<Integer>> getCmdMissCache();
 
     default double getHigh(@NotNull ItemStack helmet) {
         if (!helmet.hasItemMeta()) {
@@ -87,8 +92,15 @@ public interface CreativeHook {
         if (itemMeta.hasCustomModelData()) {
             final int customModelData = itemMeta.getCustomModelData();
             final String asString = Integer.toString(customModelData);
-            if (cmdCache.containsKey(customModelData)) {
-                return Optional.of(cmdCache.get(customModelData));
+            final Model cachedModel = cmdCache.get(customModelData);
+            if (cachedModel != null) {
+                return Optional.of(cachedModel);
+            }
+            final Set<Integer> misses = getCmdMissCache().computeIfAbsent(item.getType().getKey(),
+                    k -> java.util.concurrent.ConcurrentHashMap.newKeySet());
+            if (misses.contains(customModelData)) {
+                // Negative cache: the fallback below scans every model of the pack.
+                return Optional.empty();
             }
 
             var key = new NamespacedKey(item.getType().getKey().namespace(), "item/" + item.getType().getKey().value());
@@ -114,7 +126,7 @@ public interface CreativeHook {
                 }
             }
 
-            return optionalOverride.flatMap(override -> {
+            final Optional<Model> resolved = optionalOverride.flatMap(override -> {
                 final Model model = pack.model(override.model());
                 if (model == null) {
                     return Optional.empty();
@@ -122,6 +134,10 @@ public interface CreativeHook {
                 cmdCache.put(customModelData, model);
                 return Optional.of(model);
             });
+            if (resolved.isEmpty()) {
+                misses.add(customModelData);
+            }
+            return resolved;
         }
 
         if (!PacketEvents.getAPI().getServerManager().getVersion().isOlderThan(ServerVersion.V_1_21_3)

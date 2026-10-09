@@ -137,19 +137,16 @@ public class PlaceholderManager {
     }
 
     private void startIndexTask() {
+        // One per-tick timer for the three phase counters (was three separate timers).
         plugin.getTaskScheduler().runTaskTimerAsynchronously(() -> {
             index -= 1;
             if (index == 0) {
                 index = maxIndex;
             }
-        }, 0, 1);
-        plugin.getTaskScheduler().runTaskTimerAsynchronously(() -> {
             mmIndex -= 1;
             if (mmIndex == 1) {
                 mmIndex = maxMIndex;
             }
-        }, 0, 1);
-        plugin.getTaskScheduler().runTaskTimerAsynchronously(() -> {
             miniGradientIndexBD = miniGradientIndexBD.add(stepBD);
             if (miniGradientIndexBD.compareTo(one) > 0) {
                 miniGradientIndexBD = minusOne;
@@ -369,6 +366,9 @@ public class PlaceholderManager {
      * to keep text-display backgrounds tight around the actual text (issue #49).
      */
     public float computeHelmetExtraOffset(@NotNull Player player) {
+        if (!plugin.getConfigManager().getSettings().getPerformance().isHelmetHeightCompensation()) {
+            return 0f;
+        }
         final Advanced advanced = plugin.getConfigManager().getAdvanced();
         final boolean dbgEnabled = advanced.isHelmetRulesDebug();
         final boolean verbose = dbgEnabled && HelmetRuleDebugThrottle.tryConsume(player.getUniqueId(), advanced.getHelmetRulesDebugCooldownMs());
@@ -555,7 +555,7 @@ public class PlaceholderManager {
 
         final String intermediateResult = builder.toString();
 
-        if (papiManager.isPapiEnabled()) {
+        if (papiManager.isPapiEnabled() && intermediateResult.indexOf('%') >= 0) {
             return viewer == null ? papiManager.setPlaceholders(player, intermediateResult)
                     : papiManager.setRelationalPlaceholders(viewer, player, intermediateResult);
         }

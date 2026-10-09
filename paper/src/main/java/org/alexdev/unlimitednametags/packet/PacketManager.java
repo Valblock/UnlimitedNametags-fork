@@ -19,8 +19,10 @@ import java.util.concurrent.ConcurrentHashMap;
 public class PacketManager {
     private final UnlimitedNameTags plugin;
     private final Map<User, PassengerState> connections = new ConcurrentHashMap<>();
-    // Retain retired IDs until shutdown so late third-party mounts cannot revive removed rows.
+    // Retired IDs are kept for ROW_ID_RETENTION_TICKS so late third-party mounts cannot revive removed rows,
+    // then dropped: the server never reuses entity ids, so the set no longer grows for the whole uptime.
     private final Set<Integer> rowIds = ConcurrentHashMap.newKeySet();
+    private static final long ROW_ID_RETENTION_TICKS = 20L * 60L;
     private volatile boolean closed;
 
     public PacketManager(@NotNull UnlimitedNameTags plugin) {
@@ -78,6 +80,16 @@ public class PacketManager {
     }
 
     public boolean isRow(int entityId) { return rowIds.contains(entityId); }
+
+    /**
+     * True when this connection received the spawn of {@code rowId} after the current spawn of {@code owner},
+     * i.e. the viewer already has the row and it can be mounted on the owner.
+     */
+    public boolean isRowSpawnedAfterOwner(User user, int rowId, @NotNull Player owner) {
+        if (!isCurrent(user)) return false;
+        final PassengerState state = connections.get(user);
+        return state != null && state.spawnedAfter(rowId, owner.getEntityId());
+    }
 
     public void setPassengers(@NotNull Player owner, @NotNull List<Integer> passengers) {
         // Compatibility API for explicit owner-wide updates; intercepted packets use the viewer overload.
@@ -143,5 +155,15 @@ public class PacketManager {
 
     public void removePassenger(int passenger) {
         connections.values().forEach(state -> state.destroy(passenger));
+        retireRowId(passenger);
+    }
+
+    private void retireRowId(int rowId) {
+        if (closed || !rowIds.contains(rowId) || !plugin.isEnabled()) return;
+        try {
+            plugin.getTaskScheduler().runTaskLaterAsynchronously(() -> rowIds.remove(rowId), ROW_ID_RETENTION_TICKS);
+        } catch (Throwable ignored) {
+            // Scheduler unavailable (shutdown): the set is cleared by close() anyway.
+        }
     }
 }

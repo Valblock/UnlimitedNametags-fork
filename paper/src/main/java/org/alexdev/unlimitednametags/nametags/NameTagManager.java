@@ -62,6 +62,8 @@ public class NameTagManager implements UntNametagManagerPaper {
     private final Map<UUID, AtomicInteger> pendingRowCreations;
     private final Set<UUID> blocked;
     private final Set<UUID> hideNametags;
+    /** Viewers who do not want to see the overlay rows of other players. */
+    private final Set<UUID> hideOverlays;
     /** Players who hide their own nametag from themselves (inverse of show-own-to-self preference). */
     private final Set<UUID> hideOwnFromSelf;
     /** Owners who hide their nametag from all other viewers. */
@@ -83,6 +85,17 @@ public class NameTagManager implements UntNametagManagerPaper {
     private boolean debug = false;
     private volatile boolean distanceRefreshCullingEnabled = true;
     private final Attribute scaleAttribute;
+    /**
+     * Per-owner lifecycle locks (replaces the former manager-wide monitor): work on one player's rows never
+     * waits for another player's refresh. Lock objects are kept for the session; one small object per UUID.
+     */
+    private final ConcurrentHashMap<UUID, Object> ownerLocks = new ConcurrentHashMap<>();
+    /** Owners whose periodic-sweep refresh is still running, with its start time (nanoTime) as token. */
+    private final ConcurrentHashMap<UUID, Long> sweepRefreshInFlight = new ConcurrentHashMap<>();
+    /** Owners with a coalesced (next tick, async) refresh already queued after a tracking change. */
+    private final Set<UUID> pendingTrackRefresh = ConcurrentHashMap.newKeySet();
+    /** A sweep refresh older than this is considered lost and no longer blocks new sweeps (5 s). */
+    private static final long SWEEP_IN_FLIGHT_TIMEOUT_NANOS = 5_000_000_000L;
 
     private record ResolvedDisplayRow(
             int index,
@@ -102,6 +115,7 @@ public class NameTagManager implements UntNametagManagerPaper {
         this.pendingRowCreations = Maps.newConcurrentMap();
         this.blocked = Sets.newConcurrentHashSet();
         this.hideNametags = Sets.newConcurrentHashSet();
+        this.hideOverlays = Sets.newConcurrentHashSet();
         this.hideOwnFromSelf = Sets.newConcurrentHashSet();
         this.hideOwnFromOthers = Sets.newConcurrentHashSet();
         this.playerPreferences = new NametagPlayerPreferences(plugin);
@@ -136,6 +150,10 @@ public class NameTagManager implements UntNametagManagerPaper {
         final MyScheduledTask displayAnimations = plugin.getTaskScheduler().runTaskTimerAsynchronously(
                 () -> {
                     final long t = displayAnimationMonotonicTick.incrementAndGet();
+                    if (!PacketNameTag.isAnimationOrGlowSeen()) {
+                        // No row has ever had an animation or glow: nothing to tick.
+                        return;
+                    }
                     nameTags.values().forEach(tags -> tags.forEach(tag -> {
                         tag.tickDisplayAnimation(t);
                         tag.tickGlowAnimation(t);
@@ -159,7 +177,7 @@ public class NameTagManager implements UntNametagManagerPaper {
                             .filter(Objects::nonNull)
                             .distinct()
                             .filter(owner -> shouldRefreshOwnerThisSweep(owner, nowTick, baseRefreshInterval))
-                            .forEach(owner -> refresh(owner, false));
+                            .forEach(this::refreshFromSweep);
                 },
                 10, baseRefreshInterval);
         tasks.add(refresh);
@@ -175,7 +193,7 @@ public class NameTagManager implements UntNametagManagerPaper {
                 .forEach(player -> getPacketDisplays(player).stream()
                         .findFirst()
                         .ifPresent(tag -> ((PacketNameTag) tag).sendPassengerPacketToViewers())),
-                20, 20 * 5L);
+                20, 20 * 30L);
         tasks.add(passengers);
 
         // Scale task
@@ -226,6 +244,55 @@ public class NameTagManager implements UntNametagManagerPaper {
                     obscuredInterval,
                     obscuredInterval);
             tasks.add(obscured);
+        }
+    }
+
+    @NotNull
+    private Object ownerLock(@NotNull UUID ownerId) {
+        return ownerLocks.computeIfAbsent(ownerId, ignored -> new Object());
+    }
+
+    /**
+     * Periodic refresh with an in-flight guard: if the previous sweep refresh of this owner has not finished
+     * (slow placeholders), skip this one instead of piling up work.
+     */
+    private void refreshFromSweep(@NotNull Player owner) {
+        final UUID ownerId = owner.getUniqueId();
+        final long now = System.nanoTime();
+        final Long since = sweepRefreshInFlight.get(ownerId);
+        if (since != null && now - since < SWEEP_IN_FLIGHT_TIMEOUT_NANOS) {
+            return;
+        }
+        final Long token = now;
+        sweepRefreshInFlight.put(ownerId, token);
+        try {
+            refreshAsync(owner, false).whenComplete((ignored, error) -> sweepRefreshInFlight.remove(ownerId, token));
+        } catch (RuntimeException | Error e) {
+            sweepRefreshInFlight.remove(ownerId, token);
+            throw e;
+        }
+    }
+
+    /**
+     * Queues one asynchronous refresh of {@code owner} for the next tick; further requests before it runs are
+     * merged into it (e.g. many viewers starting to track the same player on one tick).
+     */
+    private void requestCoalescedRefresh(@NotNull Player owner) {
+        final UUID ownerId = owner.getUniqueId();
+        if (!pendingTrackRefresh.add(ownerId)) {
+            return;
+        }
+        try {
+            plugin.getTaskScheduler().runTaskLaterAsynchronously(() -> {
+                pendingTrackRefresh.remove(ownerId);
+                final Player current = onlinePlayer(ownerId);
+                if (current != null) {
+                    refreshAsync(current, false);
+                }
+            }, 1L);
+        } catch (RuntimeException e) {
+            pendingTrackRefresh.remove(ownerId);
+            throw e;
         }
     }
 
@@ -437,6 +504,7 @@ public class NameTagManager implements UntNametagManagerPaper {
         blocked.remove(uuid);
         creating.remove(uuid);
         hideNametags.remove(uuid);
+        hideOverlays.remove(uuid);
         hideOwnFromSelf.remove(uuid);
         hideOwnFromOthers.remove(uuid);
         nameTagOverrides.remove(uuid);
@@ -447,6 +515,8 @@ public class NameTagManager implements UntNametagManagerPaper {
         lastDistanceRefreshTicks.remove(uuid);
         distanceRefreshCullingBypassed.remove(uuid);
         shiftSystemBlocked.remove(uuid);
+        sweepRefreshInFlight.remove(uuid);
+        pendingTrackRefresh.remove(uuid);
     }
 
     @NotNull
@@ -519,6 +589,11 @@ public class NameTagManager implements UntNametagManagerPaper {
             hideNametags.add(player.getUniqueId());
         } else {
             hideNametags.remove(player.getUniqueId());
+        }
+        if (!playerPreferences.readSeeOverlays(player)) {
+            hideOverlays.add(player.getUniqueId());
+        } else {
+            hideOverlays.remove(player.getUniqueId());
         }
         if (!showOwnSelf) {
             hideOwnFromSelf.add(player.getUniqueId());
@@ -778,7 +853,13 @@ public class NameTagManager implements UntNametagManagerPaper {
         return true;
     }
 
-    public synchronized void addPlayer(@NotNull Player player, boolean canBlock) {
+    public void addPlayer(@NotNull Player player, boolean canBlock) {
+        synchronized (ownerLock(player.getUniqueId())) {
+            addPlayerLocked(player, canBlock);
+        }
+    }
+
+    private void addPlayerLocked(@NotNull Player player, boolean canBlock) {
         if (!preAddChecks(player, canBlock)) {
             return;
         }
@@ -800,49 +881,80 @@ public class NameTagManager implements UntNametagManagerPaper {
             futures.add(resolveDisplayRow(player, i, displayGroup, display, List.of(player), "create"));
         }
 
-        CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).thenRun(() -> runIfCurrentRows(player, createdTags, () -> {
-            if (shouldSuppressNametag(player)) {
-                removePlayer(player);
-                creating.remove(player.getUniqueId());
-                pendingRowCreations.remove(player.getUniqueId());
-                return;
-            }
-            final List<ResolvedDisplayRow> rows = collectResolvedRows(futures);
+        CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).thenRun(() -> {
+            // Computed before taking the owner lock: hat hooks may be slow and need no row state.
             final float helmetExtraOffset = plugin.getPlaceholderManager().computeHelmetExtraOffset(player);
-            runDeferredDisplayBatch(rows, false, () -> {
-                for (ResolvedDisplayRow row : rows) {
-                    final Component resolved = row.ownerComponent();
-                    if (resolved == null) {
-                        plugin.getLogger().warning(
-                                "No nametag component for owner " + player.getName() + "; skipping display row.");
-                        finishRowCreation(player.getUniqueId());
-                        continue;
-                    }
-                    loadDisplay(player, row.index(), resolved, row.displayGroup(), row.display(), helmetExtraOffset);
+            runIfCurrentRows(player, createdTags, () -> {
+                if (shouldSuppressNametag(player)) {
+                    removePlayer(player);
+                    creating.remove(player.getUniqueId());
+                    pendingRowCreations.remove(player.getUniqueId());
+                    return;
                 }
-                applyDisplayGroupStackLayout(player, rows, helmetExtraOffset);
-                applyPersistentGlowOverrides(player);
-                replayTrackedViewersAfterCreation(player);
+                final List<ResolvedDisplayRow> rows = collectResolvedRows(futures);
+                runDeferredDisplayBatch(rows, false, () -> {
+                    for (ResolvedDisplayRow row : rows) {
+                        final Component resolved = row.ownerComponent();
+                        if (resolved == null) {
+                            plugin.getLogger().warning(
+                                    "No nametag component for owner " + player.getName() + "; skipping display row.");
+                            finishRowCreation(player.getUniqueId());
+                            continue;
+                        }
+                        loadDisplay(player, row.index(), resolved, row.displayGroup(), row.display(), helmetExtraOffset);
+                    }
+                    applyDisplayGroupStackLayout(player, rows, helmetExtraOffset);
+                    applyPersistentGlowOverrides(player);
+                    replayTrackedViewersAfterCreation(player);
+                });
+                final int missingRows = rowCount - rows.size();
+                for (int i = 0; i < missingRows; i++) {
+                    finishRowCreation(player.getUniqueId());
+                }
             });
-            final int missingRows = rowCount - rows.size();
-            for (int i = 0; i < missingRows; i++) {
-                finishRowCreation(player.getUniqueId());
-            }
-        }));
+        });
 
     }
-    public synchronized void refresh(@NotNull Player player, boolean force) {
+
+    /**
+     * Refreshes the owner's rows. Never runs the refresh on the server thread: calls from it are handed to an
+     * async task so main-thread events cannot wait on placeholder work or on the owner lock.
+     */
+    public void refresh(@NotNull Player player, boolean force) {
+        if (Bukkit.isPrimaryThread()) {
+            plugin.getTaskScheduler().runTaskAsynchronously(() -> {
+                if (player.isOnline()) {
+                    refreshAsync(player, force);
+                }
+            });
+            return;
+        }
+        refreshAsync(player, force);
+    }
+
+    /**
+     * @return a future completed once the refresh has been applied (or skipped)
+     */
+    @NotNull
+    private CompletableFuture<Void> refreshAsync(@NotNull Player player, boolean force) {
+        synchronized (ownerLock(player.getUniqueId())) {
+            return refreshLocked(player, force);
+        }
+    }
+
+    @NotNull
+    private CompletableFuture<Void> refreshLocked(@NotNull Player player, boolean force) {
         final Settings.NameTag nametag = getEffectiveNametag(player);
 
         if (PacketEvents.getAPI().getPlayerManager().getUser(player) == null) {
-            return;
+            return CompletableFuture.completedFuture(null);
         }
 
         updateLineCount(player, nametag);
 
         final CopyOnWriteArrayList<PacketNameTag> playerTags = nameTags.get(player.getUniqueId());
         if (playerTags == null || playerTags.isEmpty()) {
-            return;
+            return CompletableFuture.completedFuture(null);
         }
 
         final List<CompletableFuture<ResolvedDisplayRow>> futures = new ArrayList<>(nametag.displayGroups().size());
@@ -870,26 +982,50 @@ public class NameTagManager implements UntNametagManagerPaper {
 
             futures.add(resolveDisplayRow(player, i, displayGroup, (PacketNameTag) display, relationalPlayers, "edit"));
         }
-        CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).thenRun(() -> runIfCurrentRows(player, playerTags, () -> {
+        return CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).thenRun(() -> {
+            // Outside the owner lock: rows are resolved futures, helmet height only reads the owner's equipment.
             final List<ResolvedDisplayRow> rows = collectResolvedRows(futures);
             final float helmetExtraOffset = plugin.getPlaceholderManager().computeHelmetExtraOffset(player);
-            runDeferredDisplayBatch(rows, force, () -> {
-                rows.forEach(row -> editDisplay(player, row.index(), row.display(), row.components(),
-                        row.displayGroup(), force, helmetExtraOffset));
-                applyDisplayGroupStackLayout(player, rows, helmetExtraOffset);
-            });
-        }));
+            for (final ResolvedDisplayRow row : rows) {
+                row.display().setDeferMetadataFlush(true);
+            }
+            try {
+                final boolean applied = runIfCurrentRows(player, playerTags, () -> {
+                    rows.forEach(row -> editDisplay(player, row.index(), row.display(), row.components(),
+                            row.displayGroup(), force, helmetExtraOffset));
+                    applyDisplayGroupStackLayout(player, rows, helmetExtraOffset);
+                });
+                if (applied) {
+                    // Packet flush happens after the owner lock is released; removed rows flush nothing.
+                    flushDirtyForRows(rows, force);
+                }
+            } finally {
+                for (final ResolvedDisplayRow row : rows) {
+                    row.display().setDeferMetadataFlush(false);
+                }
+            }
+        });
     }
 
-    // ponytail: one lifecycle lock serializes publication/removal; split per owner if contention is measured.
-    private synchronized void runIfCurrentRows(Player player, CopyOnWriteArrayList<PacketNameTag> rows, Runnable action) {
-        if (nameTags.get(player.getUniqueId()) == rows
-                && plugin.getPlayerListener().getPlayer(player.getUniqueId()) == player) {
-            action.run();
+    /** Runs {@code action} under the owner lock if {@code rows} is still the owner's live row list. */
+    private boolean runIfCurrentRows(Player player, CopyOnWriteArrayList<PacketNameTag> rows, Runnable action) {
+        synchronized (ownerLock(player.getUniqueId())) {
+            if (nameTags.get(player.getUniqueId()) == rows
+                    && plugin.getPlayerListener().getPlayer(player.getUniqueId()) == player) {
+                action.run();
+                return true;
+            }
+            return false;
         }
     }
 
-    private synchronized void updateLineCount(Player player, Settings.NameTag nametag) {
+    private void updateLineCount(Player player, Settings.NameTag nametag) {
+        synchronized (ownerLock(player.getUniqueId())) {
+            updateLineCountLocked(player, nametag);
+        }
+    }
+
+    private void updateLineCountLocked(Player player, Settings.NameTag nametag) {
         CopyOnWriteArrayList<PacketNameTag> list = nameTags.computeIfAbsent(player.getUniqueId(),
                 k -> new CopyOnWriteArrayList<>());
 
@@ -998,6 +1134,22 @@ public class NameTagManager implements UntNametagManagerPaper {
         if (force || meta.isSeeThrough() != seeThrough) {
             meta.setSeeThrough(seeThrough);
         }
+
+        final Settings.Overlay overlay = displayGroup.overlay();
+        final Settings.TextAlignment alignment = overlay != null
+                ? overlay.effectiveAlignment() : Settings.TextAlignment.CENTER;
+        final boolean alignLeft = alignment == Settings.TextAlignment.LEFT;
+        final boolean alignRight = alignment == Settings.TextAlignment.RIGHT;
+        if (force || meta.isAlignLeft() != alignLeft) {
+            meta.setAlignLeft(alignLeft);
+        }
+        if (force || meta.isAlignRight() != alignRight) {
+            meta.setAlignRight(alignRight);
+        }
+        final Byte fixedOpacity = overlay != null ? overlay.fixedTextOpacity() : null;
+        if (fixedOpacity != null && (force || meta.getTextOpacity() != fixedOpacity)) {
+            meta.setTextOpacity(fixedOpacity);
+        }
     }
 
     private void finishRowCreation(@NotNull UUID uuid) {
@@ -1047,7 +1199,13 @@ public class NameTagManager implements UntNametagManagerPaper {
         }
     }
 
-    private synchronized void replaceDisplayIfNeeded(@NotNull Player player, int index, @NotNull Settings.DisplayGroup displayGroup) {
+    private void replaceDisplayIfNeeded(@NotNull Player player, int index, @NotNull Settings.DisplayGroup displayGroup) {
+        synchronized (ownerLock(player.getUniqueId())) {
+            replaceDisplayIfNeededLocked(player, index, displayGroup);
+        }
+    }
+
+    private void replaceDisplayIfNeededLocked(@NotNull Player player, int index, @NotNull Settings.DisplayGroup displayGroup) {
         final CopyOnWriteArrayList<PacketNameTag> list = nameTags.get(player.getUniqueId());
         if (list == null || index < 0 || index >= list.size()) {
             return;
@@ -1169,15 +1327,28 @@ public class NameTagManager implements UntNametagManagerPaper {
             final float lineHeight = Math.max(0.01f, settings.getBehavior().getDisplayGroupLineHeightBlocks());
             boolean hasVisibleRow = false;
             float nextYOffset = 0f;
+            Float anchorYOffset = null;
+            boolean anchorHelmet = false;
 
             for (ResolvedDisplayRow row : rows) {
+                if (row.displayGroup().isOverlay()) {
+                    // drawn over the previous row: same height, takes no room
+                    final float base = anchorYOffset != null ? anchorYOffset : 0f;
+                    row.display().setCompactStackYOffset(base + row.displayGroup().yOffset(), anchorHelmet);
+                    continue;
+                }
                 if (!isCompactStackVisible(player, row)) {
-                    row.display().setCompactStackYOffset(hasVisibleRow ? nextYOffset : row.displayGroup().yOffset(), false);
+                    final float hiddenYOffset = hasVisibleRow ? nextYOffset : row.displayGroup().yOffset();
+                    row.display().setCompactStackYOffset(hiddenYOffset, false);
+                    anchorYOffset = hiddenYOffset;
+                    anchorHelmet = false;
                     continue;
                 }
 
                 final float rowYOffset = hasVisibleRow ? nextYOffset : row.displayGroup().yOffset();
                 row.display().setCompactStackYOffset(rowYOffset, !hasVisibleRow);
+                anchorYOffset = rowYOffset;
+                anchorHelmet = !hasVisibleRow;
                 nextYOffset = rowYOffset + estimateDisplayGroupHeight(row, lineHeight);
                 hasVisibleRow = true;
             }
@@ -1198,20 +1369,30 @@ public class NameTagManager implements UntNametagManagerPaper {
         for (Player viewer : viewersUnion) {
             boolean hasVisibleRow = false;
             float nextYOffset = 0f;
+            float anchorCompactY = 0f;
+            boolean anchorHelmet = false;
             for (int i = 0; i < rows.size(); i++) {
                 final ResolvedDisplayRow row = rows.get(i);
                 final PacketNameTag display = row.display();
                 final float inc = stackIncreasedOffset(display);
-                final boolean visible = isCompactStackVisibleForViewer(player, viewer, row);
                 final float rowCompactY;
                 final boolean helmetForRow;
-                rowCompactY = hasVisibleRow ? nextYOffset : row.displayGroup().yOffset();
-                if (!visible) {
-                    helmetForRow = false;
+                if (row.displayGroup().isOverlay()) {
+                    // drawn over the previous row: same height, takes no room
+                    rowCompactY = anchorCompactY + row.displayGroup().yOffset();
+                    helmetForRow = anchorHelmet;
                 } else {
-                    helmetForRow = !hasVisibleRow;
-                    nextYOffset = rowCompactY + estimateDisplayGroupHeightForViewer(player, viewer, row, lineHeight);
-                    hasVisibleRow = true;
+                    final boolean visible = isCompactStackVisibleForViewer(player, viewer, row);
+                    rowCompactY = hasVisibleRow ? nextYOffset : row.displayGroup().yOffset();
+                    if (!visible) {
+                        helmetForRow = false;
+                    } else {
+                        helmetForRow = !hasVisibleRow;
+                        nextYOffset = rowCompactY + estimateDisplayGroupHeightForViewer(player, viewer, row, lineHeight);
+                        hasVisibleRow = true;
+                    }
+                    anchorCompactY = rowCompactY;
+                    anchorHelmet = helmetForRow;
                 }
                 final float baseY = globalYOffset + inc + rowCompactY + (helmetForRow ? helmetExtraOffset : 0f);
                 yByRow.get(i).put(viewer.getUniqueId(), baseY);
@@ -1363,14 +1544,16 @@ public class NameTagManager implements UntNametagManagerPaper {
                 .forEach(p -> paperRow(display).showToPlayer(p));
     }
 
-    public synchronized void removePlayer(@NotNull Player player) {
-        creating.remove(player.getUniqueId());
-        pendingRowCreations.remove(player.getUniqueId());
-        final CopyOnWriteArrayList<PacketNameTag> packetNameTags = nameTags.remove(player.getUniqueId());
-        if (packetNameTags != null) {
-            for (PacketNameTag packetNameTag : packetNameTags) {
-                packetNameTag.remove();
-                entityIdToDisplay.remove(packetNameTag.getEntityId());
+    public void removePlayer(@NotNull Player player) {
+        synchronized (ownerLock(player.getUniqueId())) {
+            creating.remove(player.getUniqueId());
+            pendingRowCreations.remove(player.getUniqueId());
+            final CopyOnWriteArrayList<PacketNameTag> packetNameTags = nameTags.remove(player.getUniqueId());
+            if (packetNameTags != null) {
+                for (PacketNameTag packetNameTag : packetNameTags) {
+                    packetNameTag.remove();
+                    entityIdToDisplay.remove(packetNameTag.getEntityId());
+                }
             }
         }
 
@@ -1653,14 +1836,28 @@ public class NameTagManager implements UntNametagManagerPaper {
             showToOwner(player);
             return;
         }
+        final User viewerUser = PacketEvents.getAPI().getPlayerManager().getUser(player);
+        if (player != target && (viewerUser == null || !plugin.getPacketManager().knowsOwner(viewerUser, target))) {
+            // The owner's spawn has not been written to this viewer yet, so rows cannot be shown (and their
+            // spawns would be cancelled). PacketManager#trackSpawn calls this again right after that spawn.
+            return;
+        }
         boolean updated = false;
         for (PaperNametagRow packetNameTag : getPacketDisplays(target)) {
+            if (player != target && packetNameTag.canPlayerSee(player)
+                    && plugin.getPacketManager().isRowSpawnedAfterOwner(viewerUser,
+                    ((PacketNameTag) packetNameTag).getEntityId(), target)) {
+                // Already spawned for this viewer after the owner's current spawn: nothing to redo.
+                continue;
+            }
             packetNameTag.hideFromPlayerSilently(player);
             packetNameTag.showToPlayer(player);
             updated = true;
         }
         if (updated) {
-            refresh(target, false);
+            // The new viewer already got the owner's metadata snapshot and cached text; this async, coalesced
+            // refresh only brings relational text / per-viewer layout up to date.
+            requestCoalescedRefresh(target);
         }
     }
 
@@ -1684,6 +1881,7 @@ public class NameTagManager implements UntNametagManagerPaper {
 
     public void updateDisplaysForPlayer(@NotNull Player player) {
         final Set<UUID> tracked = plugin.getTrackerManager().getTrackedPlayers(player.getUniqueId());
+        final User viewerUser = PacketEvents.getAPI().getPlayerManager().getUser(player);
         nameTags.values().forEach(tags -> tags.forEach(display -> {
             final PaperNametagRow row = paperRow(display);
             final Player owner = row.getOwner();
@@ -1704,6 +1902,12 @@ public class NameTagManager implements UntNametagManagerPaper {
             }
 
             display.getBlocked().remove(player.getUniqueId());
+
+            if (viewerUser != null && row.canPlayerSee(player)
+                    && plugin.getPacketManager().isRowSpawnedAfterOwner(viewerUser, display.getEntityId(), owner)) {
+                // The viewer already has this row, spawned after the owner's current spawn: keep it.
+                return;
+            }
 
             row.hideFromPlayerSilently(player);
             row.showToPlayer(player);
@@ -1750,7 +1954,49 @@ public class NameTagManager implements UntNametagManagerPaper {
         return hideNametags.contains(player.getUniqueId());
     }
 
-    public synchronized void swapNametag(@NotNull Player player, @NotNull Settings.NameTag nameTag) {
+    /**
+     * Shows or hides the overlay rows ({@code overlay} display groups) of every other player for this viewer.
+     */
+    public void setSeeingOverlays(@NotNull Player viewer, boolean see) {
+        playerPreferences.writeSeeOverlays(viewer, see);
+        if (see) {
+            hideOverlays.remove(viewer.getUniqueId());
+        } else {
+            hideOverlays.add(viewer.getUniqueId());
+        }
+        plugin.getTrackerManager().getTrackedPlayers(viewer.getUniqueId()).forEach(uuid -> {
+            final Player tracked = plugin.getPlayerListener().getPlayer(uuid);
+            if (tracked == null || tracked.getUniqueId().equals(viewer.getUniqueId())) {
+                return;
+            }
+            for (PacketNameTag tag : nameTags.getOrDefault(tracked.getUniqueId(), new CopyOnWriteArrayList<>())) {
+                if (!tag.getDisplayGroup().isOverlay()) {
+                    continue;
+                }
+                if (see) {
+                    paperRow(tag).showToPlayer(viewer);
+                } else {
+                    paperRow(tag).hideFromPlayer(viewer);
+                }
+            }
+        });
+    }
+
+    public boolean isSeeingOverlays(@NotNull Player viewer) {
+        return !hideOverlays.contains(viewer.getUniqueId());
+    }
+
+    public boolean isHidingOverlays(@NotNull UUID viewerId) {
+        return hideOverlays.contains(viewerId);
+    }
+
+    public void swapNametag(@NotNull Player player, @NotNull Settings.NameTag nameTag) {
+        synchronized (ownerLock(player.getUniqueId())) {
+            swapNametagLocked(player, nameTag);
+        }
+    }
+
+    private void swapNametagLocked(@NotNull Player player, @NotNull Settings.NameTag nameTag) {
         updateLineCount(player, nameTag);
 
         final CopyOnWriteArrayList<PacketNameTag> swapTags = nameTags.get(player.getUniqueId());
@@ -1769,29 +2015,31 @@ public class NameTagManager implements UntNametagManagerPaper {
             futures.add(resolveDisplayRow(player, i, displayGroup, display, relationalPlayers, "swap"));
         }
 
-        CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).thenRun(() -> runIfCurrentRows(player, swapTags, () -> {
-            final List<ResolvedDisplayRow> rows = collectResolvedRows(futures);
+        CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).thenRun(() -> {
             final float helmetExtraOffset = plugin.getPlaceholderManager().computeHelmetExtraOffset(player);
-            runDeferredDisplayBatch(rows, false, () -> {
-                for (ResolvedDisplayRow row : rows) {
-                    final Component component = row.ownerComponent();
-                    if (component == null) {
-                        plugin.getLogger().warning(
-                                "No nametag component for owner " + player.getName() + "; swap skipped for one row.");
-                        continue;
+            runIfCurrentRows(player, swapTags, () -> {
+                final List<ResolvedDisplayRow> rows = collectResolvedRows(futures);
+                runDeferredDisplayBatch(rows, false, () -> {
+                    for (ResolvedDisplayRow row : rows) {
+                        final Component component = row.ownerComponent();
+                        if (component == null) {
+                            plugin.getLogger().warning(
+                                    "No nametag component for owner " + player.getName() + "; swap skipped for one row.");
+                            continue;
+                        }
+                        loadDisplay(player, row.index(), component, row.displayGroup(), row.display(), helmetExtraOffset);
+                        if (row.displayGroup().resolvedDisplayType() == NametagDisplayType.TEXT) {
+                            row.components().forEach((p, c) -> {
+                                if (!p.equals(player) && c != null) {
+                                    paperRow(row.display()).text(p, c);
+                                }
+                            });
+                        }
                     }
-                    loadDisplay(player, row.index(), component, row.displayGroup(), row.display(), helmetExtraOffset);
-                    if (row.displayGroup().resolvedDisplayType() == NametagDisplayType.TEXT) {
-                        row.components().forEach((p, c) -> {
-                            if (!p.equals(player) && c != null) {
-                                paperRow(row.display()).text(p, c);
-                            }
-                        });
-                    }
-                }
-                applyDisplayGroupStackLayout(player, rows, helmetExtraOffset);
+                    applyDisplayGroupStackLayout(player, rows, helmetExtraOffset);
+                });
             });
-        }));
+        });
 
     }
 
@@ -2263,7 +2511,7 @@ public class NameTagManager implements UntNametagManagerPaper {
     }
 
     @Override
-    public synchronized void swapNametag(@NotNull UUID playerId, @NotNull Settings.NameTag nameTag) {
+    public void swapNametag(@NotNull UUID playerId, @NotNull Settings.NameTag nameTag) {
         final Player player = onlinePlayer(playerId);
         if (player != null) {
             swapNametag(player, nameTag);
