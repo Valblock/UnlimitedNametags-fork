@@ -15,7 +15,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write   # pour deposer le jar sur la branche build-jar
 
     steps:
       - name: Checkout
@@ -42,3 +42,20 @@ jobs:
           name: UnlimitedNametags
           path: target/UnlimitedNametags.jar
           if-no-files-found: error
+
+      # Le jar est aussi depose sur la branche build-jar (un seul fichier,
+      # historique ecrase) : on le recupere avec un simple git fetch, sans
+      # passer par le stockage des artefacts.
+      - name: Publish jar to build-jar branch
+        if: github.event_name == 'push'
+        run: |
+          set -e
+          mkdir -p /tmp/jar && cp target/UnlimitedNametags.jar /tmp/jar/
+          cd /tmp/jar
+          git init -q -b build-jar
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "Source: ${GITHUB_REPOSITORY}@${GITHUB_SHA} (${GITHUB_REF_NAME})" > SOURCE.txt
+          git add UnlimitedNametags.jar SOURCE.txt
+          git commit -q -m "UnlimitedNametags.jar from ${GITHUB_SHA}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" build-jar
