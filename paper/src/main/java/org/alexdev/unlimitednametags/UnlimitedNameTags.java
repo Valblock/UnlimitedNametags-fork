@@ -4,6 +4,8 @@ import com.alessiodp.libby.BukkitLibraryManager;
 import com.alessiodp.libby.Library;
 import com.github.Anon8281.universalScheduler.UniversalScheduler;
 import com.github.Anon8281.universalScheduler.scheduling.schedulers.TaskScheduler;
+import com.github.retrooper.packetevents.PacketEvents;
+import com.github.retrooper.packetevents.protocol.entity.type.EntityTypes;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import lombok.Getter;
@@ -85,6 +87,10 @@ public final class UnlimitedNameTags extends JavaPlugin implements UnlimitedName
     @Override
     public void onEnable() {
         isPaper = isPaperSupported();
+        if (!isPacketEventsRecentEnough()) {
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
         loadLibraries().join();
         kyoriManager = new KyoriManager(this);
 
@@ -114,6 +120,23 @@ public final class UnlimitedNameTags extends JavaPlugin implements UnlimitedName
         UNTPaperAPI.register(this);
         getLogger().info("API registered");
         getLogger().info("UnlimitedNameTags has been enabled!");
+    }
+
+    /**
+     * The shaded EntityLib needs entity types added in PacketEvents 2.10 (MANNEQUIN); an older
+     * PacketEvents only fails later, on the first nametag, with a NoSuchFieldError.
+     */
+    private boolean isPacketEventsRecentEnough() {
+        try {
+            EntityTypes.class.getField("MANNEQUIN");
+            return true;
+        } catch (NoSuchFieldException e) {
+            getLogger().severe("PacketEvents " + PacketEvents.getAPI().getVersion() + " is too old: 2.10 or newer is required.");
+            getLogger().severe("PacketEvents classes are loaded from "
+                    + EntityTypes.class.getProtectionDomain().getCodeSource().getLocation()
+                    + " - remove any other PacketEvents jar from the plugins folder.");
+            return false;
+        }
     }
 
     private boolean loadConfig() {
