@@ -1,9 +1,8 @@
 name: Publish SNAPSHOT
 
+# Fork Valblock : plus de publication automatique a chaque push sur main
+# (pas de secrets Maven Central ici) ; lancement manuel seulement.
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 concurrency:

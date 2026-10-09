@@ -1,0 +1,39 @@
+name: Build
+
+# Fork Valblock : compile le jar du plugin a chaque push et sur chaque PR,
+# et le publie en artefact (onglet Actions > run > Artifacts).
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: gradle
+
+      - name: Build plugin jar and run tests
+        run: bash ./gradlew :paper:shadowJar test --no-daemon --stacktrace
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: UnlimitedNametags
+          path: target/UnlimitedNametags.jar
+          if-no-files-found: error
