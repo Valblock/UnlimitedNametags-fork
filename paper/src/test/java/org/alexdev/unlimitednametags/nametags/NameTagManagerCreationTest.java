@@ -41,6 +41,7 @@ class NameTagManagerCreationTest {
         setField(manager, "creating", creating);
         setField(manager, "pendingRowCreations", pending);
         setField(manager, "entityIdToDisplay", new HashMap<>());
+        setField(manager, "ownerLocks", new ConcurrentHashMap<UUID, Object>());
 
         CopyOnWriteArrayList<PacketNameTag> oldRows = new CopyOnWriteArrayList<>();
         nameTags.put(owner, oldRows);

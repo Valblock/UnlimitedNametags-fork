@@ -41,7 +41,8 @@ public class PlayerListener implements PackSendHandler {
     private final Map<UUID, UUID> zeroDamageRecoveryRunIds;
     private final Map<UUID, MyScheduledTask> respawnShowTasks;
     private final Map<UUID, Location> playerWorlds;
-    private static final long[] TELEPORT_SYNC_DELAYS = {5L, 20L, 60L, 100L};
+    /** Recovery attempts after teleports / zero-damage hits / cancelled deaths (was 4 attempts up to 100 ticks). */
+    private static final long[] TELEPORT_SYNC_DELAYS = {5L, 40L};
 
     public PlayerListener(UnlimitedNameTags plugin) {
         this.plugin = plugin;
@@ -128,6 +129,11 @@ public class PlayerListener implements PackSendHandler {
         } catch (ClassNotFoundException e) {
             return false;
         }
+    }
+
+    /** Cheap check usable on Netty threads: whether {@code entityId} belongs to an online (joined) player. */
+    public boolean isPlayerEntityId(int entityId) {
+        return playerEntityId.containsKey(entityId);
     }
 
     public Optional<Player> getPlayerFromEntityId(int entityId) {
@@ -279,7 +285,7 @@ public class PlayerListener implements PackSendHandler {
         plugin.getNametagManager().removeAllViewers(event.getEntity());
     }
 
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = false)
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onZeroDamage(@NotNull EntityDamageEvent event) {
         if (!(event.getEntity() instanceof Player player)) {
             return;
@@ -304,11 +310,9 @@ public class PlayerListener implements PackSendHandler {
     }
 
     private void scheduleCancelledDeathRecovery(@NotNull Player player) {
-        final long[] delays = {5L, 20L, 60L, 100L};
-        for (long delay : delays) {
-            plugin.getTaskScheduler().runTaskLaterAsynchronously(() -> {
-                recoverNametagVisibility(player);
-            }, delay);
+        for (long delay : TELEPORT_SYNC_DELAYS) {
+            // Entity scheduler (main thread on Paper): recovery reads Bukkit tracking state.
+            plugin.getTaskScheduler().runTaskLater(player, () -> recoverNametagVisibility(player), delay);
         }
     }
 
@@ -319,7 +323,7 @@ public class PlayerListener implements PackSendHandler {
             return;
         }
         for (long delay : TELEPORT_SYNC_DELAYS) {
-            plugin.getTaskScheduler().runTaskLaterAsynchronously(() -> {
+            plugin.getTaskScheduler().runTaskLater(player, () -> {
                 if (!runId.equals(zeroDamageRecoveryRunIds.get(uuid))) {
                     return;
                 }
@@ -424,7 +428,7 @@ public class PlayerListener implements PackSendHandler {
 
     private void scheduleTeleportSyncAttempt(@NotNull Player player, @NotNull UUID uuid, @NotNull UUID runId, int attempt) {
         final long delay = TELEPORT_SYNC_DELAYS[Math.min(attempt, TELEPORT_SYNC_DELAYS.length - 1)];
-        final MyScheduledTask task = plugin.getTaskScheduler().runTaskLaterAsynchronously(() -> {
+        final MyScheduledTask task = plugin.getTaskScheduler().runTaskLater(player, () -> {
             if (!runId.equals(teleportSyncRunIds.get(uuid))) {
                 return;
             }
@@ -444,9 +448,15 @@ public class PlayerListener implements PackSendHandler {
             }
         }, delay);
 
-        teleportSyncTasks.put(uuid, task);
+        if (task != null) {
+            teleportSyncTasks.put(uuid, task);
+        }
     }
 
+    /**
+     * Must run on the player's entity thread (main thread on Paper): {@link TrackerManager#reconcileTrackedState}
+     * reads Bukkit tracking state. The packet work is then handed to an async task.
+     */
     private void recoverNametagVisibility(@NotNull Player player) {
         if (!player.isOnline() || player.isDead()) {
             return;
@@ -458,11 +468,16 @@ public class PlayerListener implements PackSendHandler {
             return;
         }
         plugin.getTrackerManager().reconcileTrackedState(player);
-        plugin.getNametagManager().showToTrackedPlayers(player);
-        plugin.getNametagManager().updateDisplaysForPlayer(player);
-        if (plugin.getNametagManager().isEffectiveShowOwnNametag(player)) {
-            plugin.getNametagManager().showToOwner(player);
-        }
+        plugin.getTaskScheduler().runTaskAsynchronously(() -> {
+            if (!player.isOnline()) {
+                return;
+            }
+            plugin.getNametagManager().showToTrackedPlayers(player);
+            plugin.getNametagManager().updateDisplaysForPlayer(player);
+            if (plugin.getNametagManager().isEffectiveShowOwnNametag(player)) {
+                plugin.getNametagManager().showToOwner(player);
+            }
+        });
     }
 
     private void cancelTeleportSync(@NotNull UUID uuid) {

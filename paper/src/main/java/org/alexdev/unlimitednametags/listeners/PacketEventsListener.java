@@ -162,7 +162,12 @@ public class PacketEventsListener extends PacketListenerAbstract {
             final int id = event.getPacketType() == PacketType.Play.Server.SPAWN_ENTITY
                     ? new WrapperPlayServerSpawnEntity(event).getEntityId()
                     : new WrapperPlayServerSpawnPlayer(event).getEntityId();
-            if (plugin.getPacketManager().isRow(id)) {
+            final boolean isRow = plugin.getPacketManager().isRow(id);
+            if (!isRow && !plugin.getPlayerListener().isPlayerEntityId(id)) {
+                // Only players (nametag owners) and nametag rows matter for mounting; skip every other entity.
+                return;
+            }
+            if (isRow) {
                 final Optional<PaperNametagRow> row = plugin.getNametagManager().getPacketDisplayByEntityId(id);
                 if (row.isEmpty() || row.get().getOwner() == null
                         || !plugin.getPacketManager().knowsOwner(user, row.get().getOwner())

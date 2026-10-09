@@ -23,11 +23,30 @@ final class PassengerState {
     }
     synchronized boolean knows(int id) { return spawned.containsKey(id); }
 
+    /** True when both ids were written to this connection and {@code id} after {@code earlierId}. */
+    synchronized boolean spawnedAfter(int id, int earlierId) {
+        final Long token = spawned.get(id);
+        final Long earlier = spawned.get(earlierId);
+        return token != null && earlier != null && token > earlier;
+    }
+
     synchronized void destroy(int id) {
         spawned.remove(id);
         pendingSpawns.remove(id);
+        if (passengers.isEmpty()) {
+            return;
+        }
         passengers.remove(id);
-        passengers.replaceAll((owner, ids) -> Arrays.stream(ids).filter(passenger -> passenger != id).toArray());
+        // Only rewrite the (rare) passenger lists that actually reference the destroyed entity.
+        for (Map.Entry<Integer, int[]> entry : passengers.entrySet()) {
+            final int[] ids = entry.getValue();
+            for (int passenger : ids) {
+                if (passenger == id) {
+                    entry.setValue(Arrays.stream(ids).filter(other -> other != id).toArray());
+                    break;
+                }
+            }
+        }
     }
 
     synchronized void clear() {
