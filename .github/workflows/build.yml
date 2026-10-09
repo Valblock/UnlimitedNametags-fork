@@ -25,11 +25,16 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "25"
+          # Gradle 8.14.x cannot run on JDK 25 builds with 4-component versions
+          # (Kotlin DSL crashes parsing e.g. "25.0.4.1"): Gradle itself runs on
+          # JDK 21 (last entry = JAVA_HOME), JDK 25 is only the compile toolchain.
+          java-version: |
+            25
+            21
           cache: gradle
 
       - name: Build plugin jar and run tests
-        run: bash ./gradlew :paper:shadowJar test --no-daemon --stacktrace
+        run: bash ./gradlew :paper:shadowJar test --no-daemon --stacktrace -Porg.gradle.java.installations.fromEnv=JAVA_HOME_25_X64
 
       - name: Upload jar
         uses: actions/upload-artifact@v4
