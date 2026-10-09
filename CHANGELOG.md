@@ -1,5 +1,22 @@
 # Changelog
 
+## Valblock fork
+
+- CI: Gradle runs on JDK 21 and compiles with the JDK 25 toolchain (Gradle 8.14 cannot parse 4-part JDK 25 versions).
+- Nametag lifecycle locking is per player instead of one manager-wide monitor; helmet height and packet flushes of a refresh run outside the lock.
+- `refresh` called from the server thread is handed to an async task; the periodic sweep skips an owner whose previous refresh is still running.
+- Tracking a player no longer refreshes the owner synchronously: rows are only (re)spawned once the owner spawn reached the viewer, rows the viewer already has are skipped, and one coalesced async refresh follows.
+- A changed nametag text sends only the changed metadata entry; the full metadata resync is kept for the first text after a viewer (re)attaches.
+- `setBillboard` only writes when the value changes (no more useless metadata packet + refresh event per viewer and refresh).
+- New `performance.helmetHeightCompensation` (default `false`): hat-height compensation and its hooks are skipped entirely when off.
+- ItemsAdder hat hook: pack loaded lazily and asynchronously, only model JSON kept in memory; JSON model lookups and custom-model-data misses are memoized.
+- Teleport / zero-damage / cancelled-death recovery: 2 attempts (5 and 40 ticks) instead of 4, Bukkit tracking reads on the player's thread, rows the viewer already has are not respawned; zero-damage handler ignores cancelled events.
+- Packet listener only tracks spawns of players and nametag rows; destroying an entity no longer rewrites every passenger list.
+- Retired row entity ids are forgotten after 60 s instead of being kept until shutdown.
+- PlaceholderAPI: second pass only when the first result still contains `%`; the final whole-line pass is skipped when no `%` is left.
+- One per-tick timer for the placeholder phase counters instead of three; the per-tick animation/glow task does nothing until a row has an animation or glow.
+- Passenger resync every 30 s instead of 5 s.
+
 ## Unreleased
 
 ### Breaking changes
