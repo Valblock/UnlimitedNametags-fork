@@ -100,6 +100,11 @@ public final class BukkitNametagPlatform implements NametagPlatformBridge {
     }
 
     @Override
+    public boolean viewerHidesOverlays(@NotNull UUID viewerId) {
+        return plugin.getNametagManager().isHidingOverlays(viewerId);
+    }
+
+    @Override
     public boolean isEligibleToShow(@NotNull UUID owner, @NotNull UUID viewerId, boolean visible, boolean viewerAlreadySeeing) {
         return nametagShowBlockReason(owner, viewerId, visible, viewerAlreadySeeing) == null;
     }

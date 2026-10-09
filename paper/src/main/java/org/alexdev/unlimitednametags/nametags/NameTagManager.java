@@ -62,6 +62,8 @@ public class NameTagManager implements UntNametagManagerPaper {
     private final Map<UUID, AtomicInteger> pendingRowCreations;
     private final Set<UUID> blocked;
     private final Set<UUID> hideNametags;
+    /** Viewers who do not want to see the overlay rows of other players. */
+    private final Set<UUID> hideOverlays;
     /** Players who hide their own nametag from themselves (inverse of show-own-to-self preference). */
     private final Set<UUID> hideOwnFromSelf;
     /** Owners who hide their nametag from all other viewers. */
@@ -113,6 +115,7 @@ public class NameTagManager implements UntNametagManagerPaper {
         this.pendingRowCreations = Maps.newConcurrentMap();
         this.blocked = Sets.newConcurrentHashSet();
         this.hideNametags = Sets.newConcurrentHashSet();
+        this.hideOverlays = Sets.newConcurrentHashSet();
         this.hideOwnFromSelf = Sets.newConcurrentHashSet();
         this.hideOwnFromOthers = Sets.newConcurrentHashSet();
         this.playerPreferences = new NametagPlayerPreferences(plugin);
@@ -501,6 +504,7 @@ public class NameTagManager implements UntNametagManagerPaper {
         blocked.remove(uuid);
         creating.remove(uuid);
         hideNametags.remove(uuid);
+        hideOverlays.remove(uuid);
         hideOwnFromSelf.remove(uuid);
         hideOwnFromOthers.remove(uuid);
         nameTagOverrides.remove(uuid);
@@ -585,6 +589,11 @@ public class NameTagManager implements UntNametagManagerPaper {
             hideNametags.add(player.getUniqueId());
         } else {
             hideNametags.remove(player.getUniqueId());
+        }
+        if (!playerPreferences.readSeeOverlays(player)) {
+            hideOverlays.add(player.getUniqueId());
+        } else {
+            hideOverlays.remove(player.getUniqueId());
         }
         if (!showOwnSelf) {
             hideOwnFromSelf.add(player.getUniqueId());
@@ -1943,6 +1952,42 @@ public class NameTagManager implements UntNametagManagerPaper {
 
     public boolean isHiddenOtherNametags(@NotNull Player player) {
         return hideNametags.contains(player.getUniqueId());
+    }
+
+    /**
+     * Shows or hides the overlay rows ({@code overlay} display groups) of every other player for this viewer.
+     */
+    public void setSeeingOverlays(@NotNull Player viewer, boolean see) {
+        playerPreferences.writeSeeOverlays(viewer, see);
+        if (see) {
+            hideOverlays.remove(viewer.getUniqueId());
+        } else {
+            hideOverlays.add(viewer.getUniqueId());
+        }
+        plugin.getTrackerManager().getTrackedPlayers(viewer.getUniqueId()).forEach(uuid -> {
+            final Player tracked = plugin.getPlayerListener().getPlayer(uuid);
+            if (tracked == null || tracked.getUniqueId().equals(viewer.getUniqueId())) {
+                return;
+            }
+            for (PacketNameTag tag : nameTags.getOrDefault(tracked.getUniqueId(), new CopyOnWriteArrayList<>())) {
+                if (!tag.getDisplayGroup().isOverlay()) {
+                    continue;
+                }
+                if (see) {
+                    paperRow(tag).showToPlayer(viewer);
+                } else {
+                    paperRow(tag).hideFromPlayer(viewer);
+                }
+            }
+        });
+    }
+
+    public boolean isSeeingOverlays(@NotNull Player viewer) {
+        return !hideOverlays.contains(viewer.getUniqueId());
+    }
+
+    public boolean isHidingOverlays(@NotNull UUID viewerId) {
+        return hideOverlays.contains(viewerId);
     }
 
     public void swapNametag(@NotNull Player player, @NotNull Settings.NameTag nameTag) {

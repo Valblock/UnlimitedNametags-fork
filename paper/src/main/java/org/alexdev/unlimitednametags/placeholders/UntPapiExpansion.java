@@ -47,6 +47,8 @@ public class UntPapiExpansion extends PlaceholderExpansion {
             case "-phase-md" -> plugin.getPlaceholderManager().getFormattedPhases(PlaceholderManager.NEG_PHASE_MD_KEY);
             case "see_others", "pref_see_others" -> boolPref(player, () ->
                     !plugin.getNametagManager().isHiddenOtherNametags(player));
+            case "see_overlays", "pref_see_overlays" -> boolPref(player,
+                    () -> plugin.getNametagManager().isSeeingOverlays(player));
             case "show_own_self", "pref_show_own_self" -> boolPref(player,
                     () -> plugin.getNametagManager().isShowingOwnNametagToSelf(player));
             case "show_own_to_others", "pref_show_own_to_others" -> boolPref(player,

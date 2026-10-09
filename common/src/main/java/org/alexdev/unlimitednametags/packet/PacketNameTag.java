@@ -814,13 +814,26 @@ public abstract class PacketNameTag implements AnimationPoseTarget, NametagPasse
         if (removed || blocked.contains(viewerId)) {
             return false;
         }
+        if (hiddenAsOverlay(viewerId)) {
+            return false;
+        }
         return platform.isEligibleToShow(ownerId, viewerId, visible, getViewers().contains(viewerId));
+    }
+
+    /**
+     * An overlay row of another player, for a viewer who chose not to see overlays.
+     */
+    private boolean hiddenAsOverlay(@NotNull UUID viewerId) {
+        return displayGroup.isOverlay() && !viewerId.equals(ownerId) && platform.viewerHidesOverlays(viewerId);
     }
 
     @NotNull
     private String showBlockReason(@NotNull UUID viewerId) {
         if (blocked.contains(viewerId)) {
             return "viewer is blocked for this nametag";
+        }
+        if (hiddenAsOverlay(viewerId)) {
+            return "viewer hides other players' overlay rows";
         }
         final String reason = platform.nametagShowBlockReason(ownerId, viewerId, visible, getViewers().contains(viewerId));
         return reason != null ? reason : "unknown eligibility failure";

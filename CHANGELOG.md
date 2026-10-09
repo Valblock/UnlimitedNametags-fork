@@ -3,6 +3,7 @@
 ## Valblock fork
 
 - New display group option `overlay: {alignment: LEFT|RIGHT|CENTER, textOpacity: 4-255}`: the text row is drawn at the height of the previous row without taking room in the compact stack, aligned on the edge of its widest line, with a fixed text opacity that sneaking and through-wall dimming leave alone. Used to frame the whole nametag with a resource-pack glyph.
+- New per-viewer preference `seeoverlays` (`/unt preferences seeoverlays <true|false> [player]`, placeholder `%unt_see_overlays%`, stored like the other preferences): a viewer can stop seeing the overlay rows of other players.
 - The plugin refuses to enable with PacketEvents older than 2.10 and logs which jar the PacketEvents classes come from.
 - CI: Gradle runs on JDK 21 and compiles with the JDK 25 toolchain (Gradle 8.14 cannot parse 4-part JDK 25 versions).
 - Nametag lifecycle locking is per player instead of one manager-wide monitor; helmet height and packet flushes of a refresh run outside the lock.
