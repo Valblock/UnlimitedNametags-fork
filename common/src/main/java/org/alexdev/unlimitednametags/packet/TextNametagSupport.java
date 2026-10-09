@@ -4,6 +4,7 @@ import com.github.retrooper.packetevents.protocol.player.User;
 import com.google.common.collect.Maps;
 import me.tofaa.entitylib.meta.display.TextDisplayMeta;
 import net.kyori.adventure.text.Component;
+import org.alexdev.unlimitednametags.config.Settings;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -127,7 +128,17 @@ final class TextNametagSupport {
     }
 
     void setTextOpacity(final byte b) {
-        modifyTextAll(meta -> meta.setTextOpacity(b));
+        final byte opacity = effectiveOpacity(b);
+        modifyTextAll(meta -> meta.setTextOpacity(opacity));
+    }
+
+    /**
+     * An overlay row keeps its fixed opacity: sneaking or through-wall dimming must not reveal its hidden text.
+     */
+    private byte effectiveOpacity(final byte requested) {
+        final Settings.Overlay overlay = host.getDisplayGroup().overlay();
+        final Byte fixed = overlay != null ? overlay.fixedTextOpacity() : null;
+        return fixed != null ? fixed : requested;
     }
 
     void clearObscuredPresentationTracking() {
@@ -187,7 +198,7 @@ final class TextNametagSupport {
             if (user == null) {
                 continue;
             }
-            final byte opacityFinal = opacity;
+            final byte opacityFinal = effectiveOpacity(opacity);
             final boolean seeThroughFinal = seeThroughMeta;
             modifyTextForViewer(user, m -> {
                 m.setTextOpacity(opacityFinal);

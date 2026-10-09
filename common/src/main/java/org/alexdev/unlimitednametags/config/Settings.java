@@ -331,6 +331,39 @@ public class Settings {
         }
     }
 
+    /**
+     * A text row drawn over the previous row (same height, takes no room in the compact stack).
+     * <p>
+     * A text display is as wide as its widest line; {@code LEFT} / {@code RIGHT} align every line on that box edge.
+     * Repeating the lines of other rows in an overlay therefore gives it their common width, so a glyph put at the
+     * start (LEFT) or end (RIGHT) of a line sits exactly at the edge of the whole nametag, whatever its content.
+     * <p>
+     * {@code textOpacity} (4-255, -1 = normal) is fixed for the row: sneaking and through-wall dimming do not change
+     * it. Below 26 the vanilla text shader draws nothing; a resource pack shader can still draw chosen glyphs.
+     */
+    public record Overlay(@Nullable TextAlignment alignment, @Nullable Integer textOpacity) {
+
+        @NotNull
+        public TextAlignment effectiveAlignment() {
+            return alignment != null ? alignment : TextAlignment.CENTER;
+        }
+
+        /**
+         * Fixed text opacity as the entity data byte, or {@code null} to keep the normal (sneak / through-wall) opacity.
+         */
+        @Nullable
+        public Byte fixedTextOpacity() {
+            if (textOpacity == null || textOpacity < 0) {
+                return null;
+            }
+            return (byte) Math.min(255, textOpacity.intValue());
+        }
+    }
+
+    public enum TextAlignment {
+        CENTER, LEFT, RIGHT
+    }
+
     public record NametagLine(@NotNull String text, @Nullable String when) {
 
         public NametagLine {
@@ -355,6 +388,9 @@ public class Settings {
      * <p>
      * Optional {@code glow} (fixed, reference, rainbow, gradient); optional {@code glowInterval} overrides
      * root {@code displayAnimationInterval} for glow tick cadence.
+     * <p>
+     * Optional {@code overlay} (text rows only): the row is drawn at the height of the previous row, without taking
+     * room in the stack, with its own text alignment and a fixed text opacity (see {@link Overlay}).
      */
     public record DisplayGroup(
             List<NametagLine> lines,
@@ -374,7 +410,8 @@ public class Settings {
             @Nullable Integer animationInterval,
             @Nullable AbstractDisplayMeta.BillboardConstraints billboard,
             @Nullable GlowOverride glow,
-            @Nullable Integer glowInterval) {
+            @Nullable Integer glowInterval,
+            @Nullable Overlay overlay) {
 
         public DisplayGroup {
             final NametagDisplayType resolved = displayType != null ? displayType : NametagDisplayType.TEXT;
@@ -390,6 +427,21 @@ public class Settings {
                         .toList();
             }
             background = isRedundantOmittedBackground(background) ? null : background;
+        }
+
+        /**
+         * Binary-compatible constructor for integrations compiled before {@link #overlay()} was added.
+         */
+        public DisplayGroup(List<NametagLine> lines, @Nullable Background background, float scale, float yOffset,
+                @Nullable String when, boolean relationalConditions, @Nullable NametagDisplayType displayType,
+                @Nullable String itemMaterial, @Nullable Integer customModelData, @Nullable String itemModel,
+                @Nullable String nexoId, @Nullable String blockMaterial, @Nullable String itemDisplayMode,
+                @Nullable DisplayAnimation animation, @Nullable Integer animationInterval,
+                @Nullable AbstractDisplayMeta.BillboardConstraints billboard, @Nullable GlowOverride glow,
+                @Nullable Integer glowInterval) {
+            this(lines, background, scale, yOffset, when, relationalConditions, displayType, itemMaterial,
+                    customModelData, itemModel, nexoId, blockMaterial, itemDisplayMode, animation, animationInterval,
+                    billboard, glow, glowInterval, null);
         }
 
         /**
@@ -473,6 +525,13 @@ public class Settings {
             return Math.max(1, settings.getBehavior().resolveDisplayAnimationTickInterval());
         }
 
+        /**
+         * Whether this row is drawn over the previous row instead of being stacked above it.
+         */
+        public boolean isOverlay() {
+            return overlay != null;
+        }
+
         // ─── with* helpers ────────────────────────────────────────────────────
 
         public DisplayGroup withBackground(@Nullable Background background) {
@@ -489,7 +548,7 @@ public class Settings {
         }
 
         public DisplayGroup withLines(@NotNull List<NametagLine> lines) {
-            return new DisplayGroup(lines, background, scale, yOffset, when, relationalConditions, displayType, itemMaterial, customModelData, itemModel, nexoId, blockMaterial, itemDisplayMode, animation, animationInterval, billboard, glow, glowInterval);
+            return new DisplayGroup(lines, background, scale, yOffset, when, relationalConditions, displayType, itemMaterial, customModelData, itemModel, nexoId, blockMaterial, itemDisplayMode, animation, animationInterval, billboard, glow, glowInterval, overlay);
         }
 
         public DisplayGroup withWhen(@Nullable String when) {
@@ -532,7 +591,7 @@ public class Settings {
                 @Nullable AbstractDisplayMeta.BillboardConstraints billboard,
                 @Nullable GlowOverride glow,
                 @Nullable Integer glowInterval) {
-            return new DisplayGroup(lines, background, scale, yOffset, when, relationalConditions, displayType, itemMaterial, customModelData, itemModel, nexoId, blockMaterial, itemDisplayMode, animation, animationInterval, billboard, glow, glowInterval);
+            return new DisplayGroup(lines, background, scale, yOffset, when, relationalConditions, displayType, itemMaterial, customModelData, itemModel, nexoId, blockMaterial, itemDisplayMode, animation, animationInterval, billboard, glow, glowInterval, overlay);
         }
 
         // ─── Builder ──────────────────────────────────────────────────────────
@@ -566,6 +625,7 @@ public class Settings {
             private @Nullable AbstractDisplayMeta.BillboardConstraints billboard = null;
             private @Nullable GlowOverride glow = null;
             private @Nullable Integer glowInterval = null;
+            private @Nullable Overlay overlay = null;
 
             private Builder() {
             }
@@ -589,6 +649,7 @@ public class Settings {
                 this.billboard = base.billboard();
                 this.glow = base.glow();
                 this.glowInterval = base.glowInterval();
+                this.overlay = base.overlay();
             }
 
             public Builder line(@NotNull String text) {
@@ -691,10 +752,15 @@ public class Settings {
                 return this;
             }
 
+            public Builder overlay(@Nullable Overlay overlay) {
+                this.overlay = overlay;
+                return this;
+            }
+
             @NotNull
             public DisplayGroup build() {
                 return new DisplayGroup(List.copyOf(lines), background, scale, yOffset, when, relationalConditions,
-                        displayType, itemMaterial, customModelData, itemModel, nexoId, blockMaterial, itemDisplayMode, animation, animationInterval, billboard, glow, glowInterval);
+                        displayType, itemMaterial, customModelData, itemModel, nexoId, blockMaterial, itemDisplayMode, animation, animationInterval, billboard, glow, glowInterval, overlay);
             }
         }
     }

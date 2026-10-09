@@ -1125,6 +1125,22 @@ public class NameTagManager implements UntNametagManagerPaper {
         if (force || meta.isSeeThrough() != seeThrough) {
             meta.setSeeThrough(seeThrough);
         }
+
+        final Settings.Overlay overlay = displayGroup.overlay();
+        final Settings.TextAlignment alignment = overlay != null
+                ? overlay.effectiveAlignment() : Settings.TextAlignment.CENTER;
+        final boolean alignLeft = alignment == Settings.TextAlignment.LEFT;
+        final boolean alignRight = alignment == Settings.TextAlignment.RIGHT;
+        if (force || meta.isAlignLeft() != alignLeft) {
+            meta.setAlignLeft(alignLeft);
+        }
+        if (force || meta.isAlignRight() != alignRight) {
+            meta.setAlignRight(alignRight);
+        }
+        final Byte fixedOpacity = overlay != null ? overlay.fixedTextOpacity() : null;
+        if (fixedOpacity != null && (force || meta.getTextOpacity() != fixedOpacity)) {
+            meta.setTextOpacity(fixedOpacity);
+        }
     }
 
     private void finishRowCreation(@NotNull UUID uuid) {
@@ -1302,15 +1318,28 @@ public class NameTagManager implements UntNametagManagerPaper {
             final float lineHeight = Math.max(0.01f, settings.getBehavior().getDisplayGroupLineHeightBlocks());
             boolean hasVisibleRow = false;
             float nextYOffset = 0f;
+            Float anchorYOffset = null;
+            boolean anchorHelmet = false;
 
             for (ResolvedDisplayRow row : rows) {
+                if (row.displayGroup().isOverlay()) {
+                    // drawn over the previous row: same height, takes no room
+                    final float base = anchorYOffset != null ? anchorYOffset : 0f;
+                    row.display().setCompactStackYOffset(base + row.displayGroup().yOffset(), anchorHelmet);
+                    continue;
+                }
                 if (!isCompactStackVisible(player, row)) {
-                    row.display().setCompactStackYOffset(hasVisibleRow ? nextYOffset : row.displayGroup().yOffset(), false);
+                    final float hiddenYOffset = hasVisibleRow ? nextYOffset : row.displayGroup().yOffset();
+                    row.display().setCompactStackYOffset(hiddenYOffset, false);
+                    anchorYOffset = hiddenYOffset;
+                    anchorHelmet = false;
                     continue;
                 }
 
                 final float rowYOffset = hasVisibleRow ? nextYOffset : row.displayGroup().yOffset();
                 row.display().setCompactStackYOffset(rowYOffset, !hasVisibleRow);
+                anchorYOffset = rowYOffset;
+                anchorHelmet = !hasVisibleRow;
                 nextYOffset = rowYOffset + estimateDisplayGroupHeight(row, lineHeight);
                 hasVisibleRow = true;
             }
@@ -1331,20 +1360,30 @@ public class NameTagManager implements UntNametagManagerPaper {
         for (Player viewer : viewersUnion) {
             boolean hasVisibleRow = false;
             float nextYOffset = 0f;
+            float anchorCompactY = 0f;
+            boolean anchorHelmet = false;
             for (int i = 0; i < rows.size(); i++) {
                 final ResolvedDisplayRow row = rows.get(i);
                 final PacketNameTag display = row.display();
                 final float inc = stackIncreasedOffset(display);
-                final boolean visible = isCompactStackVisibleForViewer(player, viewer, row);
                 final float rowCompactY;
                 final boolean helmetForRow;
-                rowCompactY = hasVisibleRow ? nextYOffset : row.displayGroup().yOffset();
-                if (!visible) {
-                    helmetForRow = false;
+                if (row.displayGroup().isOverlay()) {
+                    // drawn over the previous row: same height, takes no room
+                    rowCompactY = anchorCompactY + row.displayGroup().yOffset();
+                    helmetForRow = anchorHelmet;
                 } else {
-                    helmetForRow = !hasVisibleRow;
-                    nextYOffset = rowCompactY + estimateDisplayGroupHeightForViewer(player, viewer, row, lineHeight);
-                    hasVisibleRow = true;
+                    final boolean visible = isCompactStackVisibleForViewer(player, viewer, row);
+                    rowCompactY = hasVisibleRow ? nextYOffset : row.displayGroup().yOffset();
+                    if (!visible) {
+                        helmetForRow = false;
+                    } else {
+                        helmetForRow = !hasVisibleRow;
+                        nextYOffset = rowCompactY + estimateDisplayGroupHeightForViewer(player, viewer, row, lineHeight);
+                        hasVisibleRow = true;
+                    }
+                    anchorCompactY = rowCompactY;
+                    anchorHelmet = helmetForRow;
                 }
                 final float baseY = globalYOffset + inc + rowCompactY + (helmetForRow ? helmetExtraOffset : 0f);
                 yByRow.get(i).put(viewer.getUniqueId(), baseY);
