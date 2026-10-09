@@ -263,6 +263,13 @@ public class Settings {
                 "Nearest viewers keep behavior.taskInterval; farther owners still refresh, but less often."
         })
         private DistanceRefreshCulling distanceRefreshCulling = new DistanceRefreshCulling();
+
+        @Comment({
+                "Raise nametags above tall cosmetic helmets/hats (ItemsAdder, Nexo, Oraxen, HMCCosmetics, advanced.yml rules).",
+                "Needs the hat plugin's resource pack models in memory and per-refresh helmet lookups.",
+                "Disabled by default for performance: nametags keep their normal height whatever the helmet."
+        })
+        private boolean helmetHeightCompensation = false;
     }
 
     @Configuration

@@ -18,7 +18,10 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalDouble;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -26,6 +29,12 @@ public final class JsonModelHeightResolver {
     private static final double MULTIPLIER = 1.1;
 
     private final File zipFile;
+    /**
+     * Parsed JSON per zip path, including misses ({@link Optional#empty()}). The pack zip is immutable for the
+     * lifetime of this resolver (hooks create a new resolver when the pack is rebuilt), so every path is read
+     * from the zip at most once instead of on every helmet lookup.
+     */
+    private final Map<String, Optional<JsonObject>> jsonCache = new ConcurrentHashMap<>();
 
     public JsonModelHeightResolver(@NotNull File zipFile) {
         this.zipFile = zipFile;
@@ -194,6 +203,10 @@ public final class JsonModelHeightResolver {
     }
 
     private JsonObject readJson(@NotNull String path) {
+        return jsonCache.computeIfAbsent(path, p -> Optional.ofNullable(readJsonFromZip(p))).orElse(null);
+    }
+
+    private JsonObject readJsonFromZip(@NotNull String path) {
         try (ZipFile zip = new ZipFile(zipFile)) {
             ZipEntry entry = zip.getEntry(path);
             if (entry == null) {
